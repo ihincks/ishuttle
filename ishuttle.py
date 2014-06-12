@@ -10,6 +10,8 @@ Created on Fri Feb 21 10:22:18 2014
 */
 """
 
+__version__ = '0.1a'
+
 import os
 from subprocess import check_output, CalledProcessError
 from IPython.parallel import interactive
