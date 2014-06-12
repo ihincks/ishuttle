@@ -16,6 +16,12 @@ import os
 from subprocess import check_output, CalledProcessError
 from IPython.parallel import interactive
 
+import signal, contextlib
+
+import logging
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
+
 class RemoteCommander(object):
     """
     RemoteCommander is a backbone class which abstracts sending remote commands
@@ -30,16 +36,18 @@ class RemoteCommander(object):
         pass
 
 
-    def _cmd(self, cmd_list):
-        # just in case we want to add logging or something later
-        check_output(cmd_list) 
+    def _cmd(self, cmd_list, timeout=None):
+        with alarm(timeout if timeout is not None else 0):
+            # just in case we want to add logging or something later
+            logger.debug("RemoteCommander: {}".format(cmd_list))
+            check_output(cmd_list) 
 
-    def _remote_cmd(self, cmd, host):
+    def _remote_cmd(self, cmd, host, timeout=None):
         # Run a command remotely on a single host
         # cmd can be a string with no spaces, or a list of strings
         
         cmd_list = cmd if not isinstance(cmd, basestring) else [cmd]
-        self._cmd([self._ssh_cmd] + self._ssh_args + [host] + cmd_list)
+        self._cmd([self._ssh_cmd] + self._ssh_args + [host] + cmd_list, timeout=timeout)
 
     def _send(self, local, remote, host, clean=False):
         # scp local to the working directory of the host
@@ -76,7 +84,10 @@ class Shuttle(RemoteCommander):
 
     def _create_working_dirs(self):
         # Ensures that the working_dir folder actually exists
-        self.circulate_remote_cmd(['mkdir', '-p', '--', self._wd])
+        try:
+            self.circulate_remote_cmd(['mkdir', '-p', '--', self._wd], timeout=20)
+        except Alarm:
+            raise IOError("Could not create working directories in 20 seconds. Perhaps you have a problem with your SSH configuration?")
 
     def _change_working_dirs(self):
         # Goes through each engine and switches its working directory
@@ -123,13 +134,13 @@ class Shuttle(RemoteCommander):
         for host in self.hostnames:
             self._send(local, self._wd, host, clean=clean)
 
-    def circulate_remote_cmd(self, cmd):
+    def circulate_remote_cmd(self, cmd, timeout=None):
         """
         Run the same Popen command list on each of the engine servers
         """
 
         for host in self.hostnames:
-            self._remote_cmd(cmd, host)
+            self._remote_cmd(cmd, host, timeout=timeout)
 
     def remote_import(self, module, import_as=None, path=None):
         """
@@ -161,3 +172,23 @@ class Shuttle(RemoteCommander):
             self._dview.execute('reload(' + import_as + ')')
         
         
+# See http://stackoverflow.com/questions/1191374/subprocess-with-timeout for
+# why this works, and why it will never work on Windows.
+
+class Alarm(Exception):
+    def __init__(self, signum, frame):
+        super(Alarm, self).__init__()
+        self.signum = signum
+        self.frame = frame
+    
+def alarm_handler(signum, frame):
+    raise Alarm(signum, frame)
+    
+signal.signal(signal.SIGALRM, alarm_handler)
+
+@contextlib.contextmanager
+def alarm(timeout):
+    signal.alarm(timeout)
+    yield
+    signal.alarm(0)
+
